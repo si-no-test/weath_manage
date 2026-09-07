@@ -19,42 +19,83 @@
    AI 引擎端點設定
    ------------------------------------------------------------------
    本頁為靜態網頁，任何人都能檢視原始碼，因此「絕不」在此放 API 金鑰。
-   金鑰只存在自架的 Cloudflare Worker 代理中（見 worker/index.js）。
+   金鑰只存在自架的 Cloudflare Worker 代理中。
 
-   ENDPOINT 指向自架的 Cloudflare Worker 代理（worker/index.js）。
-   設為空字串時頁面仍可正常瀏覽「定稿分析報告」，
+   ENDPOINT 指向專責 API 的獨立 Worker（與網站的 repo 無關，
+   因此更新網站不會影響它）。設為空字串時頁面仍可瀏覽定稿報告，
    僅「以 AI 重新推理」不可用。
    ------------------------------------------------------------------ */
 (() => {
-  const ENDPOINT = "https://weath-manage09.a28616109.workers.dev/api/analyze";
+  const ENDPOINT = "https://wealth-ai-api.a28616109.workers.dev";
   window.AI_ENDPOINT = ENDPOINT;
-  if (!window.AI_ENDPOINT) return;
+  if (!ENDPOINT) return;
 
-  /* 存取碼：代理端若設有 ACCESS_CODE，每次呼叫須帶 X-Access-Code。
-     只存在本分頁的 sessionStorage，關閉分頁即清除，不會進入版控。 */
+  /* ---- 存取碼保存：只存在本分頁，關閉即清除，不進入版控 ---- */
   const KEY = "wai.accessCode";
   const read = () => { try { return sessionStorage.getItem(KEY) || ""; } catch { return ""; } };
   const write = (v) => { try { v ? sessionStorage.setItem(KEY, v) : sessionStorage.removeItem(KEY); } catch {} };
   window.WAI_clearAccessCode = () => write("");
 
+  /* ---- 頁內存取碼輸入框（不用 window.prompt，相容性較好） ---- */
+  function askAccessCode() {
+    return new Promise((resolve) => {
+      const wrap = document.createElement("div");
+      wrap.setAttribute("role", "dialog");
+      wrap.setAttribute("aria-modal", "true");
+      wrap.style.cssText =
+        "position:fixed;inset:0;z-index:99999;background:rgba(51,50,51,.45);" +
+        "display:flex;align-items:center;justify-content:center;padding:20px;" +
+        'font-family:"PingFang TC","Microsoft JhengHei","Noto Sans TC",system-ui,sans-serif';
+      wrap.innerHTML =
+        '<div style="background:#fff;border-radius:12px;max-width:380px;width:100%;' +
+        'padding:22px 24px;box-shadow:0 12px 40px rgba(0,0,0,.25)">' +
+        '<div style="font-size:16px;font-weight:700;color:#8E2425;margin-bottom:6px">' +
+        "需要存取碼</div>" +
+        '<div style="font-size:13px;color:#727172;line-height:1.7;margin-bottom:14px">' +
+        "「以 AI 重新推理」需輸入存取碼，請向系統管理者索取。<br>" +
+        "存取碼只保存在此分頁，關閉後即清除。</div>" +
+        '<input type="password" autocomplete="off" placeholder="存取碼" ' +
+        'style="width:100%;box-sizing:border-box;border:1px solid #E4DECF;border-radius:6px;' +
+        'padding:9px 11px;font-size:14px;margin-bottom:14px">' +
+        '<div style="display:flex;gap:8px;justify-content:flex-end">' +
+        '<button data-act="cancel" style="border:1px solid #E4DECF;background:#fff;color:#333233;' +
+        'border-radius:6px;padding:8px 16px;font-size:13px;cursor:pointer">取消</button>' +
+        '<button data-act="ok" style="border:none;background:#AA2D2E;color:#fff;' +
+        'border-radius:6px;padding:8px 18px;font-size:13px;font-weight:700;cursor:pointer">確定</button>' +
+        "</div></div>";
+
+      const input = wrap.querySelector("input");
+      const done = (v) => { wrap.remove(); resolve(v); };
+      wrap.querySelector('[data-act="ok"]').onclick = () => done(input.value.trim());
+      wrap.querySelector('[data-act="cancel"]').onclick = () => done("");
+      wrap.onclick = (e) => { if (e.target === wrap) done(""); };
+      input.onkeydown = (e) => {
+        if (e.key === "Enter") done(input.value.trim());
+        if (e.key === "Escape") done("");
+      };
+      document.body.appendChild(wrap);
+      input.focus();
+    });
+  }
+
+  /* ---- 攔截對代理的呼叫，補上存取碼標頭 ---- */
   const origFetch = window.fetch.bind(window);
-  window.fetch = (input, init) => {
+  window.fetch = async (input, init) => {
     const opts = init || {};
     const url = typeof input === "string" ? input : (input && input.url) || "";
-    if (url !== window.AI_ENDPOINT) return origFetch(input, opts);
+    if (url.indexOf(ENDPOINT) !== 0) return origFetch(input, opts);
 
     let code = read();
     if (!code) {
-      code = (window.prompt("請輸入分析引擎存取碼（由系統管理者提供）") || "").trim();
+      code = await askAccessCode();
       if (code) write(code);
     }
     const headers = new Headers(opts.headers || {});
     if (code) headers.set("X-Access-Code", code);
 
-    return origFetch(input, { ...opts, headers }).then((resp) => {
-      if (resp.status === 401 || resp.status === 403) write("");  // 存取碼錯誤時清除，下次重問
-      return resp;
-    });
+    const resp = await origFetch(input, { ...opts, headers });
+    if (resp.status === 401 || resp.status === 403) write("");  // 存取碼有誤，下次重問
+    return resp;
   };
 })();
 </script>
