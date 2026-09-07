@@ -15,8 +15,48 @@
 <body>
 <div id="root"></div>
 <script>
-  // 選用：若日後要啟用「以 AI 重新推理」，在此指定具備 API 金鑰的後端代理端點（勿在前端放金鑰）。
-  // window.AI_ENDPOINT = "https://your-proxy.example.com/v1/messages";
+/* ------------------------------------------------------------------
+   AI 引擎端點設定
+   ------------------------------------------------------------------
+   本頁為靜態網頁，任何人都能檢視原始碼，因此「絕不」在此放 API 金鑰。
+   金鑰只存在自架的 Cloudflare Worker 代理中（見 worker/index.js）。
+
+   ENDPOINT 指向自架的 Cloudflare Worker 代理（worker/index.js）。
+   設為空字串時頁面仍可正常瀏覽「定稿分析報告」，
+   僅「以 AI 重新推理」不可用。
+   ------------------------------------------------------------------ */
+(() => {
+  const ENDPOINT = "https://weath-manage09.a28616109.workers.dev/api/analyze";
+  window.AI_ENDPOINT = ENDPOINT;
+  if (!window.AI_ENDPOINT) return;
+
+  /* 存取碼：代理端若設有 ACCESS_CODE，每次呼叫須帶 X-Access-Code。
+     只存在本分頁的 sessionStorage，關閉分頁即清除，不會進入版控。 */
+  const KEY = "wai.accessCode";
+  const read = () => { try { return sessionStorage.getItem(KEY) || ""; } catch { return ""; } };
+  const write = (v) => { try { v ? sessionStorage.setItem(KEY, v) : sessionStorage.removeItem(KEY); } catch {} };
+  window.WAI_clearAccessCode = () => write("");
+
+  const origFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    const opts = init || {};
+    const url = typeof input === "string" ? input : (input && input.url) || "";
+    if (url !== window.AI_ENDPOINT) return origFetch(input, opts);
+
+    let code = read();
+    if (!code) {
+      code = (window.prompt("請輸入分析引擎存取碼（由系統管理者提供）") || "").trim();
+      if (code) write(code);
+    }
+    const headers = new Headers(opts.headers || {});
+    if (code) headers.set("X-Access-Code", code);
+
+    return origFetch(input, { ...opts, headers }).then((resp) => {
+      if (resp.status === 401 || resp.status === 403) write("");  // 存取碼錯誤時清除，下次重問
+      return resp;
+    });
+  };
+})();
 </script>
 <script>
 (() => {
