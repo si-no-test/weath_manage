@@ -752,59 +752,97 @@ ${histTxt || "\uFF08\u672A\u63D0\u4F9B\uFF09"}
     async function runAI() {
       const cur = needs.filter((n) => n.text.trim()), curH = history.filter((h) => h.trim());
       if (!cur.length) {
-        setError("\u8ACB\u81F3\u5C11\u8F38\u5165\u4E00\u9805\u5BA2\u6236\u9700\u6C42\u3002");
+        setError("請至少輸入一項客戶需求。");
         return;
       }
       const endpoint = typeof window != "undefined" && window.AI_ENDPOINT || "";
       if (!endpoint) {
-        setError("\u975C\u614B\u7DB2\u9801\u7248\u672A\u9023\u63A5\u5206\u6790\u5F15\u64CE\uFF1A\u8ACB\u5728 index.html \u8A2D\u5B9A window.AI_ENDPOINT\uFF08\u6307\u5411\u5177\u5099 API \u91D1\u9470\u7684\u5F8C\u7AEF\u4EE3\u7406\uFF09\uFF0C\u6216\u6539\u7528\u300C\u986F\u793A\u5B9A\u7A3F\u5206\u6790\u5831\u544A\u300D\u3002");
+        setError("靜態網頁版未連接分析引擎：請在 index.html 設定 window.AI_ENDPOINT（指向具備 API 金鑰的後端代理），或改用「顯示定稿分析報告」。");
         return;
       }
       setError(""), setLoading(!0);
-      try {
-        const callApi = async (messages) => {
-          const data = await (await fetch(endpoint, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 4e3, messages })
-          })).json();
-          if (data.error) throw new Error(data.error.message || "API \u56DE\u50B3\u932F\u8AA4");
-          return data;
-        }, prompt = buildPrompt(cs, cur, curH);
-        let text = "";
-        for (let round = 0; round < 4; round++) {
-          const data = await callApi(round === 0 ? [{ role: "user", content: prompt }] : [
-            { role: "user", content: prompt },
-            { role: "assistant", content: text },
-            { role: "user", content: "\u5831\u544A\u5C1A\u672A\u8F38\u51FA\u5B8C\u7562\u3002\u8ACB\u5F9E\u4E2D\u65B7\u8655\u76F4\u63A5\u63A5\u7E8C\u8F38\u51FA\u5269\u9918\u5167\u5BB9\uFF0C\u4E0D\u8981\u91CD\u8907\u5DF2\u8F38\u51FA\u7684\u6587\u5B57\uFF0C\u4E0D\u8981\u52A0\u4EFB\u4F55\u524D\u8A00\u3002" }
-          ]);
-          if (text += (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join(`
-`), data.stop_reason !== "max_tokens") break;
-        }
-        if (!text.trim()) throw new Error("\u672A\u53D6\u5F97\u5206\u6790\u5167\u5BB9\uFF0C\u8ACB\u91CD\u8A66");
-        const secs = { profile: "", event: "", tot: "", decision: "" }, parts = text.split(/\n(?=###\s)/);
+
+      // 把目前累積到的文字切成四大段並更新畫面。串流過程中會被重複呼叫，
+      // 因此必須能正確處理「還沒寫完」的半截文字。
+      const paint = (text, streaming) => {
+        const secs = { profile: "", event: "", tot: "", decision: "" };
         let pre = "";
-        parts.forEach((p) => {
-          const h = p.split(`
-`)[0], body = p.split(`
-`).slice(1).join(`
-`).trim();
-          /客戶輪廓/.test(h) ? secs.profile = body : /初始事件/.test(h) ? secs.event = body : /思維樹/.test(h) ? secs.tot = body : /最終決策/.test(h) ? secs.decision = body : pre += p + `
-`;
-        }), !secs.decision && !secs.tot && (secs.profile = text), setReport({
+        text.split(/\n(?=###\s)/).forEach((p) => {
+          const lines = p.split("\n"), h = lines[0], body = lines.slice(1).join("\n").trim();
+          /客戶輪廓/.test(h) ? secs.profile = body : /初始事件/.test(h) ? secs.event = body : /思維樹/.test(h) ? secs.tot = body : /最終決策/.test(h) ? secs.decision = body : pre += p + "\n";
+        });
+        // 還沒出現任何 ### 標題時，整段先當作第一段顯示，避免內容重複
+        if (!secs.profile && !secs.event && !secs.tot && !secs.decision) {
+          secs.profile = text;
+          pre = "";
+        }
+        setReport({
           pre: pre.trim(),
           sections: secs,
-          disclaimer: "\u4EE5\u4E0A\u70BA AI \u4F9D\u76EE\u524D\u8F38\u5165\u91CD\u65B0\u63A8\u7406\u4E4B\u8349\u7A3F\uFF0C\u50C5\u4F9B\u7406\u5C08\u6E9D\u901A\u53C3\u8003\uFF0C\u4E0D\u69CB\u6210\u6295\u8CC7\u5EFA\u8B70\uFF1B\u5BE6\u969B\u92B7\u552E\u9808\u5B8C\u6210 KYC\u3001\u98A8\u96AA\u5C6C\u6027\u3001\u9069\u914D\u6027\u8A55\u4F30\u8207\u5B8C\u6574\u98A8\u96AA\u63ED\u9732\u3002",
+          disclaimer: "以上為 AI 依目前輸入重新推理之草稿，僅供理專溝通參考，不構成投資建議；實際銷售須完成 KYC、風險屬性、適配性評估與完整風險揭露。",
           source: "AI",
+          streaming,
+          chars: text.length,
           time: (/* @__PURE__ */ new Date()).toLocaleString("zh-TW", { hour12: !1 }),
           needsSnapshot: cur.map((n) => ({ ...n })),
           historySnapshot: curH.slice()
-        }), setOpen({ profile: !0, event: !0, tot: !0, decision: !0 }), setTimeout(() => {
-          var _a2;
-          return (_a2 = reportRef.current) == null ? void 0 : _a2.scrollIntoView({ behavior: "smooth" });
+        });
+      };
+
+      try {
+        const prompt = buildPrompt(cs, cur, curH);
+        const resp = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+          body: JSON.stringify({ stream: !0, messages: [{ role: "user", content: prompt }] })
+        });
+
+        // 錯誤一律以 JSON 回傳，不會是串流
+        if (!resp.ok || !resp.body) {
+          let msg = "HTTP " + resp.status;
+          try {
+            const j = await resp.json();
+            if (j && j.error && j.error.message) msg = j.error.message;
+          } catch (_) {}
+          throw new Error(msg);
+        }
+
+        setOpen({ profile: !0, event: !0, tot: !0, decision: !0 });
+        setTimeout(() => {
+          var _r;
+          return (_r = reportRef.current) == null ? void 0 : _r.scrollIntoView({ behavior: "smooth" });
         }, 80);
+
+        const reader = resp.body.getReader(), dec = new TextDecoder();
+        let buf = "", text = "", lastPaint = 0, apiErr = null;
+
+        for (; ; ) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          buf += dec.decode(chunk.value, { stream: !0 });
+          const lines = buf.split("\n");
+          buf = lines.pop();                       // 最後一行可能被切斷，留到下一輪再拼
+          for (const ln of lines) {
+            if (ln.indexOf("data:") !== 0) continue;
+            const raw = ln.slice(5).trim();
+            if (!raw || raw === "[DONE]") continue;
+            let ev;
+            try { ev = JSON.parse(raw); } catch (_) { continue; }
+            if (ev.type === "content_block_delta" && ev.delta && ev.delta.type === "text_delta") {
+              text += ev.delta.text;
+            } else if (ev.type === "error") {
+              apiErr = (ev.error && ev.error.message) || "串流過程發生錯誤";
+            }
+          }
+          if (apiErr) throw new Error(apiErr);
+          const now = Date.now();
+          if (text && now - lastPaint > 250) { lastPaint = now; paint(text, !0); }
+        }
+
+        if (!text.trim()) throw new Error("未取得分析內容，請重試");
+        paint(text, !1);
       } catch (e) {
-        setError(`\u5206\u6790\u5931\u6557\uFF1A${e.message}\u3002\u8ACB\u91CD\u65B0\u57F7\u884C\u3002`);
+        setError(`分析失敗：${e.message}。請重新執行。`);
       } finally {
         setLoading(!1);
       }
@@ -883,23 +921,23 @@ ${histTxt || "\uFF08\u672A\u63D0\u4F9B\uFF09"}
       /* @__PURE__ */ React.createElement("option", { value: "", disabled: !0 }, "\uFF0B \u65B0\u589E\u5F80\u4F86\u6B77\u7A0B\uFF08\u9078\u64C7\u9810\u8A2D\u5167\u5BB9\uFF0C\u52A0\u5165\u5F8C\u53EF\u518D\u7DE8\u8F2F\uFF09"),
       HISTORY_PRESETS.map((o) => /* @__PURE__ */ React.createElement("option", { key: o, value: o }, o)),
       /* @__PURE__ */ React.createElement("option", { value: "__custom__" }, "\u270E \u81EA\u884C\u8F38\u5165\u5F80\u4F86\u6B77\u7A0B\u2026")
-    ), stale && /* @__PURE__ */ React.createElement("div", { style: { background: C.amberSoft, border: "1px solid #EBD3A6", borderRadius: 8, padding: "10px 12px", fontSize: 12.5, color: C.amber, marginBottom: 12, lineHeight: 1.6 } }, "\u26A0 \u9700\u6C42\u6216\u5F80\u4F86\u6B77\u7A0B\u5DF2\u8B8A\u66F4\uFF0C\u4E0B\u65B9\u5831\u544A\u8207\u76EE\u524D\u8F38\u5165\u4E0D\u4E00\u81F4\u3002\u5B9A\u7A3F\u5831\u544A\u4E0D\u6703\u96A8\u8F38\u5165\u6539\u8B8A\uFF1B\u5982\u9700\u4F9D\u65B0\u8F38\u5165\u63A8\u7406\uFF0C\u8ACB\u9EDE\u300C\u4EE5 AI \u91CD\u65B0\u63A8\u7406\u300D\u3002"), error && /* @__PURE__ */ React.createElement("div", { style: { background: C.redSoft, border: "1px solid #E5B9AE", borderRadius: 8, padding: "10px 12px", fontSize: 12.5, color: C.red, marginBottom: 12 } }, error), /* @__PURE__ */ React.createElement(
-      "button",
-      {
-        onClick: showFinal,
-        disabled: loading,
-        style: { width: "100%", padding: "13px", borderRadius: 10, border: "none", cursor: "pointer", background: `linear-gradient(135deg, ${C.pine}, ${C.pineDeep})`, color: "#fff", fontSize: 15.5, fontWeight: 800, letterSpacing: 2, boxShadow: "0 4px 14px rgba(142,36,37,.25)" }
-      },
-      "\u986F\u793A\u5B9A\u7A3F\u5206\u6790\u5831\u544A"
-    ), /* @__PURE__ */ React.createElement(
+    ), stale && /* @__PURE__ */ React.createElement("div", { style: { background: C.amberSoft, border: "1px solid #EBD3A6", borderRadius: 8, padding: "10px 12px", fontSize: 12.5, color: C.amber, marginBottom: 12, lineHeight: 1.6 } }, "\u26A0 \u9700\u6C42\u6216\u5F80\u4F86\u6B77\u7A0B\u5DF2\u8B8A\u66F4\uFF0C\u4E0B\u65B9\u5831\u544A\u8207\u76EE\u524D\u8F38\u5165\u4E0D\u4E00\u81F4\u3002\u5B9A\u7A3F\u5831\u544A\u4E0D\u6703\u96A8\u8F38\u5165\u6539\u8B8A\uFF1B\u5982\u9700\u4F9D\u65B0\u8F38\u5165\u63A8\u7406\uFF0C\u8ACB\u9EDE\u300C\u4EE5\u4E0A\u65B9\u8F38\u5165\u5167\u5BB9\u505A AI \u5206\u6790\u300D\u3002"), error && /* @__PURE__ */ React.createElement("div", { style: { background: C.redSoft, border: "1px solid #E5B9AE", borderRadius: 8, padding: "10px 12px", fontSize: 12.5, color: C.red, marginBottom: 12 } }, error), /* @__PURE__ */ React.createElement(
       "button",
       {
         onClick: runAI,
         disabled: loading,
-        style: { width: "100%", marginTop: 8, padding: "11px", borderRadius: 10, border: `1.5px solid ${C.pine}`, cursor: loading ? "wait" : "pointer", background: loading ? C.paper : "#fff", color: C.pine, fontSize: 14, fontWeight: 700, letterSpacing: 1 }
+        style: { width: "100%", padding: "13px", borderRadius: 10, border: "none", cursor: loading ? "wait" : "pointer", background: loading ? C.gray : `linear-gradient(135deg, ${C.pine}, ${C.pineDeep})`, color: "#fff", fontSize: 15.5, fontWeight: 800, letterSpacing: 2, boxShadow: loading ? "none" : "0 4px 14px rgba(142,36,37,.25)", transition: "background .15s" }
       },
-      loading ? "\u5206\u6790\u5F15\u64CE\u63A8\u7406\u4E2D\u2026" : "\u4EE5 AI \u91CD\u65B0\u63A8\u7406\uFF08\u4F9D\u76EE\u524D\u8F38\u5165\uFF09"
-    ), loading && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10, fontSize: 12, color: C.gray, animation: "pulse 1.6s infinite", lineHeight: 1.7 } }, "\u6B63\u5728\u6BD4\u5C0D\u5BA2\u7FA4\u614B\u6A23\u3001\u5C55\u958B\u4E09\u65B9\u5411\u601D\u7DAD\u6A39\u4E26\u4F9D\u9700\u6C42\u9806\u4F4D\u4FEE\u526A\uFF0C\u7D04\u9700 30\u201360 \u79D2\u2026"))), report && /* @__PURE__ */ React.createElement("div", { ref: reportRef, style: { marginTop: 22, opacity: stale && report.source === "AI" ? 0.6 : 1, transition: "opacity .2s" } }, /* @__PURE__ */ React.createElement("div", { style: { background: C.pineDeep, color: "#fff", padding: "14px 22px", borderRadius: "12px 12px 0 0", display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, alignItems: "center" } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: font.serif, fontSize: 18, fontWeight: 700 } }, "\u{1F4D1} \u4E8B\u4EF6\u9A45\u52D5\u5BA2\u6236\u5206\u6790\uFF5C", cs.tab, "\uFF5C", cs.name), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: "#F0DCD8" } }, report.source === "AI" ? `AI \u91CD\u65B0\u63A8\u7406\u30FB\u7522\u88FD ${report.time}` : report.time)), /* @__PURE__ */ React.createElement("div", { style: { background: "#FAF8F1", border: `1px solid ${C.line}`, borderTop: "none", padding: "8px 22px 12px", fontSize: 12, color: C.gray, lineHeight: 1.7 } }, /* @__PURE__ */ React.createElement("b", { style: { color: C.pine } }, "\u672C\u6B21\u5206\u6790\u63A1\u7528\u4E4B\u5BA2\u6236\u9700\u6C42\uFF1A"), report.needsSnapshot.map((n, i) => ` \u9806\u5E8F${i + 1}\u3014${n.strategy}\u3015\u300C${n.text}\u300D`).join("\uFF1B"), (_a = report.historySnapshot) != null && _a.length ? /* @__PURE__ */ React.createElement(React.Fragment, null, "\uFF5C", /* @__PURE__ */ React.createElement("b", { style: { color: C.pine } }, "\u5F80\u4F86\u6B77\u7A0B\uFF1A"), report.historySnapshot.join("\uFF1B")) : null), report.pre && /* @__PURE__ */ React.createElement("div", { style: { background: "#fff", border: `1px solid ${C.line}`, borderTop: "none", padding: "14px 24px 6px" } }, /* @__PURE__ */ React.createElement(Markdown, { text: report.pre })), /* @__PURE__ */ React.createElement("div", { className: "no-print", style: { display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", padding: "12px 0 14px" } }, SECTIONS.filter((s) => report.sections[s.key]).map((s) => /* @__PURE__ */ React.createElement(
+      loading ? "AI 分析中…" : "以上方輸入內容做 AI 分析"
+    ), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: showFinal,
+        disabled: loading,
+        style: { width: "100%", marginTop: 8, padding: "8px", borderRadius: 8, border: `1.5px solid ${C.pine}`, cursor: loading ? "not-allowed" : "pointer", background: "#fff", color: C.pine, fontSize: 13, fontWeight: 700, letterSpacing: 1, opacity: loading ? 0.5 : 1 }
+      },
+      "顯示定稿分析報告"
+    ), loading && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10, fontSize: 12, color: C.gray, animation: "pulse 1.6s infinite", lineHeight: 1.7 } }, report && report.streaming && report.chars ? `報告產生中…已輸出 ${report.chars.toLocaleString()} 字（內容會即時顯示於下方）` : "正在比對客群態樣、展開三方向思維樹並依需求順位修剪…"))), report && /* @__PURE__ */ React.createElement("div", { ref: reportRef, style: { marginTop: 22, opacity: stale && report.source === "AI" ? 0.6 : 1, transition: "opacity .2s" } }, /* @__PURE__ */ React.createElement("div", { style: { background: C.pineDeep, color: "#fff", padding: "14px 22px", borderRadius: "12px 12px 0 0", display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, alignItems: "center" } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: font.serif, fontSize: 18, fontWeight: 700 } }, "\u{1F4D1} \u4E8B\u4EF6\u9A45\u52D5\u5BA2\u6236\u5206\u6790\uFF5C", cs.tab, "\uFF5C", cs.name), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: "#F0DCD8" } }, report.source === "AI" ? `AI \u91CD\u65B0\u63A8\u7406\u30FB\u7522\u88FD ${report.time}` : report.time)), /* @__PURE__ */ React.createElement("div", { style: { background: "#FAF8F1", border: `1px solid ${C.line}`, borderTop: "none", padding: "8px 22px 12px", fontSize: 12, color: C.gray, lineHeight: 1.7 } }, /* @__PURE__ */ React.createElement("b", { style: { color: C.pine } }, "\u672C\u6B21\u5206\u6790\u63A1\u7528\u4E4B\u5BA2\u6236\u9700\u6C42\uFF1A"), report.needsSnapshot.map((n, i) => ` \u9806\u5E8F${i + 1}\u3014${n.strategy}\u3015\u300C${n.text}\u300D`).join("\uFF1B"), (_a = report.historySnapshot) != null && _a.length ? /* @__PURE__ */ React.createElement(React.Fragment, null, "\uFF5C", /* @__PURE__ */ React.createElement("b", { style: { color: C.pine } }, "\u5F80\u4F86\u6B77\u7A0B\uFF1A"), report.historySnapshot.join("\uFF1B")) : null), report.pre && /* @__PURE__ */ React.createElement("div", { style: { background: "#fff", border: `1px solid ${C.line}`, borderTop: "none", padding: "14px 24px 6px" } }, /* @__PURE__ */ React.createElement(Markdown, { text: report.pre })), /* @__PURE__ */ React.createElement("div", { className: "no-print", style: { display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", padding: "12px 0 14px" } }, SECTIONS.filter((s) => report.sections[s.key]).map((s) => /* @__PURE__ */ React.createElement(
       "button",
       {
         key: s.key,
@@ -911,7 +949,7 @@ ${histTxt || "\uFF08\u672A\u63D0\u4F9B\uFF09"}
       s.title
     )), /* @__PURE__ */ React.createElement("span", { style: { flex: 1 } }), /* @__PURE__ */ React.createElement("button", { onClick: toggleAll, style: { border: `1px solid ${C.line}`, background: "#fff", color: C.ink, borderRadius: 8, padding: "5px 12px", fontSize: 12.5, cursor: "pointer" } }, allOpen ? "\u5168\u90E8\u6536\u5408" : "\u5168\u90E8\u5C55\u958B"), /* @__PURE__ */ React.createElement("button", { onClick: () => {
       setOpen(Object.fromEntries(SECTIONS.map((s) => [s.key, !0]))), setTimeout(() => window.print(), 150);
-    }, style: { border: `1px solid ${C.line}`, background: "#fff", color: C.ink, borderRadius: 8, padding: "5px 12px", fontSize: 12.5, cursor: "pointer" } }, "\u5217\u5370\uFF0F\u532F\u51FA PDF")), SECTIONS.filter((s) => report.sections[s.key]).map((s) => /* @__PURE__ */ React.createElement("div", { key: s.key, id: `sec-${s.key}` }, /* @__PURE__ */ React.createElement(Panel, { sec: s, open: !!open[s.key], onToggle: () => setOpen((o) => ({ ...o, [s.key]: !o[s.key] })) }, s.key === "tot" && /* @__PURE__ */ React.createElement(DirectionStrip, { tot: report.sections.tot, decision: report.sections.decision || "" }), /* @__PURE__ */ React.createElement(Markdown, { text: report.sections[s.key] })))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: C.gray, lineHeight: 1.7, padding: "6px 8px 0", fontStyle: "italic" } }, report.disclaimer)), !report && !loading && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 22, border: `1.5px dashed ${C.line}`, borderRadius: 12, padding: "36px 20px", textAlign: "center", color: C.gray, fontSize: 14, lineHeight: 1.8 } }, "\u78BA\u8A8D\u5DE6\u5074\u5BA2\u6236\u8CC7\u6599\u8207\u5E02\u5834\u4E8B\u4EF6\u3001\u53F3\u5074\u9700\u6C42\u9806\u4F4D\u8207\u5F80\u4F86\u6B77\u7A0B\u5F8C\uFF0C\u9EDE\u300C\u986F\u793A\u5B9A\u7A3F\u5206\u6790\u5831\u544A\u300D\u6AA2\u8996 2026/07/23 \u7684\u5206\u6790\u7D50\u8AD6\uFF1B", /* @__PURE__ */ React.createElement("br", null), "\u82E5\u8ABF\u6574\u4E86\u9700\u6C42\u6216\u6B77\u7A0B\uFF0C\u53EF\u9EDE\u300C\u4EE5 AI \u91CD\u65B0\u63A8\u7406\u300D\u4F9D\u76EE\u524D\u8F38\u5165\u91CD\u65B0\u5C55\u958B\u4E09\u65B9\u5411\u3002\u5831\u544A\u56DB\u5927\u6BB5\u843D\u53EF\u5404\u81EA\u647A\u758A\u5C55\u958B\u3002")));
+    }, style: { border: `1px solid ${C.line}`, background: "#fff", color: C.ink, borderRadius: 8, padding: "5px 12px", fontSize: 12.5, cursor: "pointer" } }, "\u5217\u5370\uFF0F\u532F\u51FA PDF")), SECTIONS.filter((s) => report.sections[s.key]).map((s) => /* @__PURE__ */ React.createElement("div", { key: s.key, id: `sec-${s.key}` }, /* @__PURE__ */ React.createElement(Panel, { sec: s, open: !!open[s.key], onToggle: () => setOpen((o) => ({ ...o, [s.key]: !o[s.key] })) }, s.key === "tot" && /* @__PURE__ */ React.createElement(DirectionStrip, { tot: report.sections.tot, decision: report.sections.decision || "" }), /* @__PURE__ */ React.createElement(Markdown, { text: report.sections[s.key] })))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: C.gray, lineHeight: 1.7, padding: "6px 8px 0", fontStyle: "italic" } }, report.disclaimer)), !report && !loading && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 22, border: `1.5px dashed ${C.line}`, borderRadius: 12, padding: "36px 20px", textAlign: "center", color: C.gray, fontSize: 14, lineHeight: 1.8 } }, "\u78BA\u8A8D\u5DE6\u5074\u5BA2\u6236\u8CC7\u6599\u8207\u5E02\u5834\u4E8B\u4EF6\u3001\u53F3\u5074\u9700\u6C42\u9806\u4F4D\u8207\u5F80\u4F86\u6B77\u7A0B\u5F8C\uFF0C\u9EDE\u300C\u986F\u793A\u5B9A\u7A3F\u5206\u6790\u5831\u544A\u300D\u6AA2\u8996 2026/07/23 \u7684\u5206\u6790\u7D50\u8AD6\uFF1B", /* @__PURE__ */ React.createElement("br", null), "\u82E5\u8ABF\u6574\u4E86\u9700\u6C42\u6216\u6B77\u7A0B\uFF0C\u53EF\u9EDE\u300C\u4EE5\u4E0A\u65B9\u8F38\u5165\u5167\u5BB9\u505A AI \u5206\u6790\u300D\u4F9D\u76EE\u524D\u8F38\u5165\u91CD\u65B0\u5C55\u958B\u4E09\u65B9\u5411\u3002\u5831\u544A\u56DB\u5927\u6BB5\u843D\u53EF\u5404\u81EA\u647A\u758A\u5C55\u958B\u3002")));
   }
   ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
 })();
